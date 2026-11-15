@@ -902,6 +902,39 @@ runs:
         sed -i 's/protected_modules = \[.*\]/protected_modules = []/' common/modules.bzl || true
         echo "::endgroup::"
 
+    - name: Add FinaSU
+      shell: bash
+      if: ${{ inputs.ksu_type == 'FINA' }}
+      run: |
+        set -euo pipefail
+        echo "::group::Add FinaSU"
+        cd "$KERNEL_PLATFORM_FOLDER"
+        KSU_INPUT="${{ inputs.ksu_branch_or_hash }}"
+        curl --fail --location --proto '=https' -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/master/kernel/setup.sh" | bash -s "${KSU_INPUT:-master}"
+        
+        # FinaSU's own SUSFS support is already in its driver; no KernelSU-side patches, no manual hooks
+        echo "NEED_HOOKS=false" >> $GITHUB_ENV
+        
+        KSU_VERSION=$(expr 30000 + $(git -C FinaSU rev-list --count HEAD))
+        KSU_COMMIT_SHA=$(git -C FinaSU rev-parse HEAD)
+        echo "KSU_COMMIT_SHA=$KSU_COMMIT_SHA" >> $GITHUB_ENV
+        
+        echo "Add FinaSU Configuration Settings"
+        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
+        CONFIG_KSU=y
+        CONFIG_KPROBES=y
+        CONFIG_KALLSYMS_ALL=y
+        CONFIG_EXT4_FS=y
+        CONFIG_HEADERS_INSTALL=y
+        EOF
+        
+        echo "FINA" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
+        echo "$KSU_VERSION" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
+        echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
+        echo "FinaSU Version: $KSU_VERSION"
+        echo "✅ FinaSU added (commit: ${KSU_COMMIT_SHA:0:8})"
+        echo "::endgroup::"
+
     - name: Add KernelSU Next
       shell: bash
       if: ${{ inputs.ksu_type == 'KSUN' }}
@@ -1039,6 +1072,10 @@ runs:
           echo "NEED_HOOKS=false" >> $GITHUB_ENV
         fi
         
+        if [ "${{ inputs.ksu_type }}" = "FINA" ]; then
+          echo "FinaSU: skipping KernelSU-side SUSFS patches"
+          echo "NEED_HOOKS=false" >> $GITHUB_ENV
+        else
         case "$susfs_version" in
           "v1.5.8")
             if [ "${{ inputs.ksu_type }}" = "KSUN" ]; then
@@ -1138,6 +1175,7 @@ runs:
             exit 1
             ;;
         esac
+        fi
 
         cd "$COMMON_KERNEL_FOLDER"
 
@@ -1234,6 +1272,21 @@ runs:
         echo "✅ SUSFS patches applied"
         
         echo "Add SUSFS Configuration Settings"
+        if [ "${{ inputs.ksu_type }}" = "FINA" ]; then
+        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
+        CONFIG_KSU_SUSFS=y
+        CONFIG_KSU_SUSFS_SUS_PATH=y
+        CONFIG_KSU_SUSFS_SUS_MOUNT=y
+        CONFIG_KSU_SUSFS_SUS_KSTAT=y
+        CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+        CONFIG_KSU_SUSFS_ENABLE_LOG=y
+        CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+        CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+        CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+        CONFIG_KSU_SUSFS_SUS_MAP=y
+        CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=y
+        EOF
+        else
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
         CONFIG_KSU_SUSFS=y
         CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
@@ -1254,6 +1307,7 @@ runs:
         CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=y
         CONFIG_KSU_SUSFS_SUS_SU=n
         EOF
+        fi
         
         echo "::endgroup::"
 
